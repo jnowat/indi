@@ -81,3 +81,14 @@ SET(WeatherSafetyAlpaca_SRC
 add_executable(indi_weather_safety_alpaca ${WeatherSafetyAlpaca_SRC})
 target_link_libraries(indi_weather_safety_alpaca indidriver indiclient ${HTTPLIB_LIBRARY})
 install(TARGETS indi_weather_safety_alpaca RUNTIME DESTINATION bin)
+
+# ########## Astrospheric Weather Driver ###############
+SET(astrosphericweather_SRC
+    indi_astrospheric_weather.cpp)
+
+add_executable(indi_astrospheric_weather ${astrosphericweather_SRC})
+target_link_libraries(indi_astrospheric_weather indidriver OpenSSL::SSL OpenSSL::Crypto)
+if(INDI_SYSTEM_JSONLIB)
+    target_link_libraries(indi_astrospheric_weather nlohmann_json::nlohmann_json)
+endif()
+install(TARGETS indi_astrospheric_weather RUNTIME DESTINATION bin)
