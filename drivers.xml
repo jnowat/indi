@@ -993,6 +993,10 @@
             <driver name="Weather Safety Alpaca">indi_weather_safety_alpaca</driver>
             <version>1.0</version>
         </device>
+        <device label="Astrospheric Weather" manufacturer="Others">
+            <driver name="Astrospheric Weather">indi_astrospheric_weather</driver>
+            <version>0.1</version>
+        </device>
     </devGroup>
     <devGroup group="Agent">
         <device label="Imager Agent" manufacturer="Others">
