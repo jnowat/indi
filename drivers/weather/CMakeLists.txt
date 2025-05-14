@@ -87,7 +87,7 @@ SET(astrosphericweather_SRC
     indi_astrospheric_weather.cpp)
 
 add_executable(indi_astrospheric_weather ${astrosphericweather_SRC})
-target_link_libraries(indi_astrospheric_weather indidriver OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(indi_astrospheric_weather indidriver ${HTTPLIB_LIBRARY})
 if(INDI_SYSTEM_JSONLIB)
     target_link_libraries(indi_astrospheric_weather nlohmann_json::nlohmann_json)
 endif()
