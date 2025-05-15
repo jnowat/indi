@@ -31,29 +31,20 @@
 #endif
 using json = nlohmann::json;
 
-#include <memory>
 #include <cstring>
-#include <string>
-#include <vector>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
 #include <cstdlib>
 
-#define ASTROSPHERIC_API_HOST "astrosphericpublicaccess.azurewebsites.net"
-#define ASTROSPHERIC_API_PATH "/api/GetForecastData_V1"
-#define ASTROSPHERIC_CONNECTION_TIMEOUT_SEC 5
-#define ASTROSPHERIC_READ_TIMEOUT_SEC 15
-#define ASTROSPHERIC_DATA_REFRESH_INTERVAL_SEC 21600 // 6 hours
-#define ASTROSPHERIC_EXPECTED_HOURS 82
-#define ASTROSPHERIC_CREDIT_LIMIT 100
-#define ASTROSPHERIC_CREDIT_THRESHOLD 90
-
+// Constructor for AstrosphericWeather.
 AstrosphericWeather::AstrosphericWeather()
 {
-    setVersion(1, 2);
-    setDeviceName("Astrospheric Weather");
-
+    // Set the version of the driver.
+    setVersion(0, 2);
+    // Set the connection type to none, as this is a weather driver without a physical connection.
+    setWeatherConnection(CONNECTION_NONE);
+    // Initialize forecast-related variables.
     forecastValid = false;
     lastFetchTime = 0;
     forecastHours = 0;
@@ -61,20 +52,59 @@ AstrosphericWeather::AstrosphericWeather()
     apiCreditsUsed = 0;
 }
 
+// Method to return the default name of the device.
 const char *AstrosphericWeather::getDefaultName()
 {
     return "Astrospheric Weather";
 }
 
+// Connect method to handle the connection to the device.
+bool AstrosphericWeather::Connect()
+{
+    LOG_INFO("AstrosphericWeather: Connect() called.");
+    // Set the device state to connected (IPS_OK).
+    setConnected(true);
+    // Update properties to define them for the client.
+    updateProperties();
+    return true;
+}
+
+// Disconnect method to handle the disconnection from the device.
+bool AstrosphericWeather::Disconnect()
+{
+    LOG_INFO("AstrosphericWeather: Disconnect() called.");
+    // Set the device state to disconnected (IPS_IDLE).
+    setConnected(false);
+    // Update properties to remove them as needed.
+    updateProperties();
+    return true;
+}
+
+// Method to initialize the properties of the device.
 bool AstrosphericWeather::initProperties()
 {
-    setDriverInterface(WEATHER_INTERFACE);
+    // Call the base class method to initialize standard weather properties.
     INDI::Weather::initProperties();
 
+    // Define the API key property.
     APIKeyTP[0].fill("API_KEY_VALUE", "Key", "");
     APIKeyTP.fill(getDeviceName(), "ASTROSPHERIC_API_KEY", "API Key", "Options", IP_RW, 60, IPS_IDLE);
-    defineProperty(APIKeyTP);
 
+    // Define the control weather property with six elements.
+    ControlWeatherNP[CONTROL_WEATHER].fill("Weather", "Weather", "%.f", 0, 1, 1, 0);
+    ControlWeatherNP[CONTROL_TEMPERATURE].fill("Temperature", "Temperature", "%.2f", -50, 70, 10, 15);
+    ControlWeatherNP[CONTROL_HUMIDITY].fill("Humidity", "Humidity", "%.f", 0, 100, 5, 0);
+    ControlWeatherNP[CONTROL_WIND].fill("Wind", "Wind", "%.2f", 0, 100, 5, 0);
+    ControlWeatherNP[CONTROL_GUST].fill("Gust", "Gust", "%.2f", 0, 50, 5, 0);
+    ControlWeatherNP[CONTROL_RAIN].fill("Precip", "Precip", "%.f", 0, 100, 10, 0);
+    ControlWeatherNP.fill(getDeviceName(), "WEATHER_CONTROL", "Control", MAIN_CONTROL_TAB, IP_RW, 0, IPS_IDLE);
+
+    // Define the mode switch property with two options.
+    ModeSP[MODE_API].fill("API_MODE", "API Mode", ISS_OFF);
+    ModeSP[MODE_SIMULATED].fill("SIMULATED_MODE", "Simulated Mode", ISS_ON);
+    ModeSP.fill(getDeviceName(), "WEATHER_MODE", "Mode", MAIN_CONTROL_TAB, IP_RW, ISR_1OFMANY, 0, IPS_IDLE);
+
+    // Add weather parameters that will be displayed in the weather tab.
     addParameter("WEATHER_CLOUD_COVER", "Cloud Cover (%)", 0, 100, 50);
     addParameter("WEATHER_TEMPERATURE", "Temperature (C)", -50, 50, 0);
     addParameter("WEATHER_WIND_SPEED", "Wind Speed (kph)", 0, 200, 50);
@@ -83,108 +113,154 @@ bool AstrosphericWeather::initProperties()
     addParameter("WEATHER_SEEING", "Seeing (0–5)", 0, 5, 0);
     addParameter("WEATHER_TRANSPARENCY", "Transparency (0–27+)", 0, 30, 0);
 
+    // Set the critical parameter for weather alerts.
     setCriticalParameter("WEATHER_CLOUD_COVER");
 
-    LOG_INFO("Astrospheric Weather driver initialized.");
+    // Add debug control for logging.
+    addDebugControl();
+
     return true;
 }
 
+// Method to update properties based on the connection state.
+bool AstrosphericWeather::updateProperties()
+{
+    // Call the base class method to handle standard property updates.
+    INDI::Weather::updateProperties();
+
+    if (isConnected())
+    {
+        // Define properties when connected.
+        defineProperty(APIKeyTP);
+        defineProperty(ControlWeatherNP);
+        defineProperty(ModeSP);
+    }
+    else
+    {
+        // Delete properties when disconnected.
+        deleteProperty(APIKeyTP);
+        deleteProperty(ControlWeatherNP);
+        deleteProperty(ModeSP);
+    }
+
+    return true;
+}
+
+// Method to handle new number property values.
+bool AstrosphericWeather::ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n)
+{
+    if (dev != nullptr && strcmp(dev, getDeviceName()) == 0)
+    {
+        if (ControlWeatherNP.isNameMatch(name))
+        {
+            // Update the control weather property with new values.
+            ControlWeatherNP.update(values, names, n);
+            ControlWeatherNP.setState(IPS_OK);
+            ControlWeatherNP.apply();
+            LOG_INFO("AstrosphericWeather ControlWeatherNP updated.");
+            return true;
+        }
+    }
+
+    // Call the base class method for other number properties.
+    return INDI::Weather::ISNewNumber(dev, name, values, names, n);
+}
+
+// Method to handle new text property values.
 bool AstrosphericWeather::ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n)
 {
     if (dev && strcmp(dev, getDeviceName()) == 0)
     {
         if (APIKeyTP.isNameMatch(name))
         {
+            // Update the API key property with the new value.
             APIKeyTP.update(texts, names, n);
             APIKeyTP.setState(IPS_OK);
             APIKeyTP.apply();
+            // Save the configuration.
             saveConfig(true, APIKeyTP.getName());
             forecastValid = false;
             return true;
         }
     }
 
+    // Call the base class method for other text properties.
     return INDI::Weather::ISNewText(dev, name, texts, names, n);
 }
 
+// Method to handle new switch property values.
+bool AstrosphericWeather::ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n)
+{
+    if (dev && strcmp(dev, getDeviceName()) == 0)
+    {
+        if (ModeSP.isNameMatch(name))
+        {
+            // Update the mode switch property.
+            ModeSP.update(states, names, n);
+            ModeSP.setState(IPS_OK);
+            ModeSP.apply();
+            LOG_INFO("AstrosphericWeather ModeSP updated.");
+            return true;
+        }
+    }
+
+    // Call the base class method for other switch properties.
+    return INDI::Weather::ISNewSwitch(dev, name, states, names, n);
+}
+
+// Method to save configuration items to a file.
 bool AstrosphericWeather::saveConfigItems(FILE *fp)
 {
+    // Call the base class method to save standard configuration items.
     INDI::Weather::saveConfigItems(fp);
+    // Save the API key, control weather, and mode properties.
     APIKeyTP.save(fp);
+    ControlWeatherNP.save(fp);
+    ModeSP.save(fp);
     return true;
 }
 
+// Method to update the weather data.
 IPState AstrosphericWeather::updateWeather()
 {
-    if (!APIKeyTP[0].getText() || strlen(APIKeyTP[0].getText()) == 0)
+    if (ModeSP[MODE_API].getState() == ISS_ON)
     {
-        LOG_ERROR("API Key is not set.");
-        APIKeyTP.setState(IPS_ALERT);
-        APIKeyTP.apply("API Key Missing");
-        return IPS_ALERT;
+        // API Mode: Fetch real data (to be implemented).
+        LOG_INFO("AstrosphericWeather: updateWeather() called in API mode (to be implemented).");
+        return IPS_BUSY;
     }
-
-    time_t now_utc = std::time(nullptr);
-
-    if (!forecastValid || difftime(now_utc, lastFetchTime) >= ASTROSPHERIC_DATA_REFRESH_INTERVAL_SEC)
+    else
     {
-        LOG_INFO("Fetching new weather data...");
-        std::string responseBody;
-
-        if (fetchDataFromAPI(responseBody) && parseJSONResponse(responseBody))
-        {
-            lastFetchTime = now_utc;
-            forecastValid = true;
-            LOG_INFO("Weather data updated successfully.");
-        }
-        else
-        {
-            forecastValid = false;
-            LOG_ERROR("Failed to update weather data.");
-            return IPS_ALERT;
-        }
+        // Simulated Mode: Use control values.
+        LOG_INFO("AstrosphericWeather: updateWeather() called in simulated mode.");
+        // Set weather parameter values based on control property.
+        setParameterValue("WEATHER_CLOUD_COVER", ControlWeatherNP[CONTROL_WEATHER].getValue());
+        setParameterValue("WEATHER_TEMPERATURE", ControlWeatherNP[CONTROL_TEMPERATURE].getValue());
+        setParameterValue("WEATHER_HUMIDITY", ControlWeatherNP[CONTROL_HUMIDITY].getValue());
+        setParameterValue("WEATHER_WIND_SPEED", ControlWeatherNP[CONTROL_WIND].getValue());
+        setParameterValue("WEATHER_WIND_GUST", ControlWeatherNP[CONTROL_GUST].getValue());
+        setParameterValue("WEATHER_RAIN_HOUR", ControlWeatherNP[CONTROL_RAIN].getValue());
+        return IPS_OK;
     }
-
-    if (forecastValid && forecastHours > 0)
-    {
-        double secondsDiff = difftime(now_utc, forecastStartTime);
-        int hourIndex = static_cast<int>(secondsDiff / 3600.0);
-
-        if (hourIndex >= 0 && hourIndex < forecastHours)
-        {
-            setParameterValue("WEATHER_CLOUD_COVER", cloudCover[hourIndex]);
-            setParameterValue("WEATHER_TEMPERATURE", temperature[hourIndex] - 273.15);
-            setParameterValue("WEATHER_WIND_SPEED", windSpeed[hourIndex] * 3.6);
-            setParameterValue("WEATHER_DEW_POINT", dewPoint[hourIndex] - 273.15);
-            setParameterValue("WEATHER_WIND_DIRECTION", windDirection[hourIndex]);
-            setParameterValue("WEATHER_SEEING", seeing[hourIndex]);
-            setParameterValue("WEATHER_TRANSPARENCY", transparency[hourIndex]);
-            return IPS_OK;
-        }
-        else
-        {
-            LOG_WARN("Current time is outside the forecast range.");
-            forecastValid = false;
-            return IPS_ALERT;
-        }
-    }
-
-    LOG_WARN("Forecast data is invalid or empty.");
-    return IPS_ALERT;
 }
 
+// Stubbed method to fetch data from the Astrospheric API.
 bool AstrosphericWeather::fetchDataFromAPI(std::string &responseBody)
 {
-    // your existing fetch code (using httplib)
+    (void)responseBody;
+    LOG_INFO("AstrosphericWeather::fetchDataFromAPI called (stubbed).");
     return false;
 }
 
+// Stubbed method to parse the JSON response from the API.
 bool AstrosphericWeather::parseJSONResponse(const std::string &jsonResponse)
 {
-    // your existing JSON parsing code
+    (void)jsonResponse;
+    LOG_INFO("AstrosphericWeather::parseJSONResponse called (stubbed).");
     return false;
 }
 
+// Static method to parse UTC date-time strings into time_t.
 time_t AstrosphericWeather::parseUTCDateTime(const std::string &dateTimeStr)
 {
     std::tm tm = {};
@@ -200,8 +276,11 @@ time_t AstrosphericWeather::parseUTCDateTime(const std::string &dateTimeStr)
 #endif
 }
 
-// Clean createDevice, no static pointer
+// Global unique pointer to the AstrosphericWeather instance.
+static std::unique_ptr<AstrosphericWeather> weather(new AstrosphericWeather());
+
+// Factory function to create the device instance.
 extern "C" INDI::DefaultDevice *createDevice()
 {
-    return new AstrosphericWeather();
+    return weather.get();
 }
