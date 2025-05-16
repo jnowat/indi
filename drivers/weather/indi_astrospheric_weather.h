@@ -28,7 +28,7 @@
 #include <string>
 #include <ctime>
 
-// AstrosphericWeather class inherits from INDI::Weather, providing the base functionality for weather drivers in INDI.
+// AstrosphericWeather class inherits from INDI::Weather, providing weather forecast data via the Astrospheric API.
 class AstrosphericWeather : public INDI::Weather
 {
 public:
@@ -47,7 +47,7 @@ public:
 
     // Override of ISNewText to handle changes to text properties (e.g., API key).
     virtual bool ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n) override;
-    // Override of ISNewNumber to handle changes to number properties (e.g., control weather values).
+    // Override of ISNewNumber to handle changes to number properties (e.g., location coordinates).
     virtual bool ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n) override;
     // Override of ISNewSwitch to handle changes to switch properties (e.g., mode selection).
     virtual bool ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n) override;
@@ -61,48 +61,52 @@ public:
     virtual bool Disconnect() override;
 
 protected:
-    // Override of updateWeather to update the weather data based on the current mode (API or simulated).
+    // Override of updateWeather to fetch and update weather forecast data.
     virtual IPState updateWeather() override;
 
+    // Timer callback for periodic weather updates.
+    void TimerHit();
+
 private:
-    // Property for the API key, which is a text input.
+    // Property for the API key, a text input required for Astrospheric API access.
     INDI::PropertyText APIKeyTP{1};
-    // Property for controlling weather parameters in simulated mode, with 6 number elements.
-    INDI::PropertyNumber ControlWeatherNP{6};
-    // Property for selecting the mode (API or simulated), with 2 switch elements.
+    // Property for location coordinates (latitude and longitude).
+    INDI::PropertyNumber LocationNP{2};
+    // Property for mode selection (API or Simulated).
     INDI::PropertySwitch ModeSP{2};
+    // Property to specify the telescope device to snoop for location.
+    INDI::PropertyText TelescopeNameTP{1};
+    // Custom property for refresh period.
+    INumber WeatherRefreshN[1];
+    INumberVectorProperty WeatherRefreshNP;
+    // Property for weather summary in the Main Control tab.
+    IText WeatherSummaryT[1];
+    ITextVectorProperty WeatherSummaryTP;
 
-    // Enumeration for the indices of the ControlWeatherNP property.
+    // Enumeration for the indices of the LocationNP property.
     enum
     {
-        CONTROL_WEATHER,      // Weather condition
-        CONTROL_TEMPERATURE,  // Temperature
-        CONTROL_HUMIDITY,     // Humidity
-        CONTROL_WIND,         // Wind speed
-        CONTROL_GUST,         // Wind gust
-        CONTROL_RAIN          // Precipitation
+        LOCATION_LATITUDE,    // Latitude in degrees
+        LOCATION_LONGITUDE    // Longitude in degrees
     };
 
-    // Enumeration for the indices of the ModeSP property.
-    enum
-    {
-        MODE_API,             // API mode for real data
-        MODE_SIMULATED        // Simulated mode for manual control
-    };
-
-    // Vectors to store forecast data (not currently used in the provided code).
+    // Vectors to store the 81-hour forecast data for each weather parameter.
     std::vector<double> cloudCover, temperature, windSpeed, dewPoint, windDirection, seeing, transparency;
-    time_t forecastStartTime;  // Start time of the forecast
-    int forecastHours;         // Number of hours in the forecast
+    time_t forecastStartTime;  // Start time of the forecast in UTC
+    int forecastHours;         // Number of hours in the forecast (should be 81)
     bool forecastValid;        // Flag indicating if the forecast is valid
-    time_t lastFetchTime;      // Last time data was fetched
-    int apiCreditsUsed;        // Number of API credits used
+    time_t lastFetchTime;      // Last time data was fetched from the API
+    int apiCreditsUsed;        // Number of API credits used in the last 24 hours
+    bool locationReceived;     // Flag to track if location data was received via snooping
+    int timerID;               // Timer ID for periodic updates
 
-    // Method to fetch data from the Astrospheric API (stubbed).
+    // Method to sync location by snooping on a telescope device.
+    void syncLocationFromSite();
+    // Method to fetch data from the Astrospheric API using the provided latitude, longitude, and API key.
     bool fetchDataFromAPI(std::string &responseBody);
-    // Method to parse the JSON response from the API (stubbed).
+    // Method to parse the JSON response from the API and populate the forecast data vectors.
     bool parseJSONResponse(const std::string &jsonResponse);
-    // Static method to parse UTC date-time strings.
+    // Static method to parse UTC date-time strings into time_t.
     static time_t parseUTCDateTime(const std::string &dateTimeStr);
 };
 
