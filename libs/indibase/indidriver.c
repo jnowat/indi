@@ -478,7 +478,7 @@ int dispatch(XMLEle *root, char msg[])
         return (0);
     }
 
-    sprintf(msg, "Unknown command: %s", rtag);
+    snprintf(msg, MAXRBUF, "Unknown command: %s", rtag);
     return (1);
 }
 
@@ -828,7 +828,7 @@ int IUGetConfigOnSwitchName(const char *dev, const char *property, char *name, s
                 if (crackISState(pcdataXMLEle(oneSwitch), &s) == 0 && s == ISS_ON)
                 {
                     found = 0;
-                    strncpy(name, findXMLAttValu(oneSwitch, "name"), size);
+                    snprintf(name, size, "%s", findXMLAttValu(oneSwitch, "name"));
                     break;
                 }
             }
@@ -951,7 +951,7 @@ int IUGetConfigText(const char *dev, const char *property, const char *member, c
             {
                 if (!strcmp(member, findXMLAttValu(oneText, "name")))
                 {
-                    strncpy(value, pcdataXMLEle(oneText), len);
+                    snprintf(value, len, "%s", pcdataXMLEle(oneText));
                     valueFound = 1;
                     break;
                 }
@@ -1042,9 +1042,9 @@ FILE *IUGetConfigFP(const char *filename, const char *dev, const char *mode, cha
         }
     }
 
-    stat(configFileName, &st);
-    /* If file is owned by root and current user is NOT root then abort */
-    if ( (st.st_uid == 0 && getuid() != 0) || (st.st_gid == 0 && getgid() != 0) )
+    /* If file is owned by root and current user is NOT root then abort. Only the owner matters: on macOS,
+     * new files take the group of their directory, so files in e.g. /tmp belong to group wheel (0). */
+    if (stat(configFileName, &st) == 0 && st.st_uid == 0 && getuid() != 0)
     {
         strncpy(errmsg,
                 "Config file is owned by root! This will lead to serious errors. To fix this, run: sudo chown -R $USER:$USER ~/.indi",

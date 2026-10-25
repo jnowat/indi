@@ -165,6 +165,8 @@ bool GuideSim::initProperties()
     //  but the simulators are a special case
     INDI::CCD::initProperties();
 
+    m_Clock.initProperties(getDeviceName(), SITE_TAB);
+
     CaptureFormat format = {"INDI_MONO", "Mono", 16, true};
     addCaptureFormat(format);
 
@@ -202,11 +204,12 @@ bool GuideSim::initProperties()
     // load() is important to fill all editfields with saved values also, so ISNewNumber() of one field
     // doesn't update the other fields of the group with the "old" contents.
     SimulatorSettingsNP.load();
-    // RGB Simulation
-    SimulateRgbSP[SIMULATE_YES].fill("SIMULATE_YES", "Yes", ISS_OFF);
-    SimulateRgbSP[SIMULATE_NO].fill("SIMULATE_NO", "No", ISS_ON);
-    SimulateRgbSP.fill(getDeviceName(), "SIMULATE_RGB", "Simulate RGB",
-                       SIMULATOR_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
+    // Sim Tests
+    SimTestsSP[SIM_TESTS_RGB].fill("RGB", "RGB", ISS_OFF);
+    SimTestsSP[SIM_TESTS_CRASH].fill("CRASH", "Crash", ISS_OFF);
+    SimTestsSP[SIM_TESTS_TIMEOUT].fill("TIMEOUT", "Timeout", ISS_OFF);
+    SimTestsSP.fill(getDeviceName(), "SIM_TESTS", "Sim Tests", SIMULATOR_TAB, IP_RW,
+                    ISR_NOFMANY, 60, IPS_IDLE);
 
     // CCD Gain
     GainNP[0].fill("GAIN", "Gain", "%.f", 0, 100, 10, 50);
@@ -216,11 +219,6 @@ bool GuideSim::initProperties()
     EqPENP[DEC_PE].fill("DEC_PE", "DEC (dd:mm:ss)", "%010.6m", -90, 90, 0, 0);
     EqPENP.fill(getDeviceName(), "EQUATORIAL_PE", "EQ PE", SIMULATOR_TAB, IP_RW, 60,
                 IPS_IDLE);
-
-    // Timeout
-    ToggleTimeoutSP[INDI_ENABLED].fill("INDI_ENABLED", "Enabled", ISS_OFF);
-    ToggleTimeoutSP[INDI_DISABLED].fill("INDI_DISABLED", "Disabled", ISS_ON);
-    ToggleTimeoutSP.fill(getDeviceName(), "CCD_TIMEOUT", "Timeout", SIMULATOR_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
 
 #ifdef USE_EQUATORIAL_PE
     IDSnoopDevice(ActiveDeviceTP[0].getText(), "EQUATORIAL_PE");
@@ -274,13 +272,14 @@ void GuideSim::ISGetProperties(const char * dev)
 
     defineProperty(SimulatorSettingsNP);
     defineProperty(EqPENP);
-    defineProperty(SimulateRgbSP);
-    defineProperty(ToggleTimeoutSP);
+    defineProperty(SimTestsSP);
 }
 
 bool GuideSim::updateProperties()
 {
     INDI::CCD::updateProperties();
+
+    m_Clock.updateProperties(this, isConnected());
 
     if (isConnected())
     {
@@ -341,7 +340,7 @@ void GuideSim::TimerHit()
     if (!isConnected())
         return;
 
-    if (InExposure && ToggleTimeoutSP.findOnSwitchIndex() == INDI_DISABLED)
+    if (InExposure && !m_SimulateTimeout)
     {
         if (m_AbortPrimaryFrame)
         {
@@ -454,7 +453,7 @@ int GuideSim::DrawCcdFrame(INDI::CCDChip * targetChip)
             }
 
             INDI::IEquatorialCoordinates epochPos { m_CurrentRA, m_CurrentDEC }, J2000Pos { 0, 0 };
-            INDI::ObservedToJ2000(&epochPos, ln_get_julian_from_sys(), &J2000Pos);
+            INDI::ObservedToJ2000(&epochPos, m_Clock.julianDate(), &J2000Pos);
             m_CurrentRA  = J2000Pos.rightascension;
             m_CurrentDEC = J2000Pos.declination;
             m_CurrentDEC += m_GuideNSOffset;
@@ -497,7 +496,7 @@ int GuideSim::DrawCcdFrame(INDI::CCDChip * targetChip)
             // King cone-error transform -- see E.S. King (1902AnHar..41..153K)
             // Differential correction to RA and Dec for alt-az polar alignment error.
             double J2decr = m_CurrentDEC * DEGREES_TO_RADIANS;
-            double sid    = get_local_sidereal_time(this->Longitude);
+            double sid    = m_Clock.localSiderealTime(this->Longitude);
             double JnHAr  = get_local_hour_angle(sid, RA) * 15.0 * DEGREES_TO_RADIANS;
 
             double J2_mnt_d_rar  = m_KingGamma * sin(J2decr) * sin(JnHAr - m_KingTheta) / cos(J2decr);
@@ -620,6 +619,14 @@ IPState GuideSim::GuideWest(uint32_t v)
     return IPS_OK;
 }
 
+bool GuideSim::ISNewText(const char * dev, const char * name, char * texts[], char * names[], int n)
+{
+    if (dev != nullptr && strcmp(dev, getDeviceName()) == 0 && m_Clock.processText(name, texts, names, n))
+        return true;
+
+    return INDI::CCD::ISNewText(dev, name, texts, names, n);
+}
+
 bool GuideSim::ISNewNumber(const char * dev, const char * name, double values[], char * names[], int n)
 {
     if (dev != nullptr && strcmp(dev, getDeviceName()) == 0)
@@ -679,7 +686,7 @@ bool GuideSim::ISNewNumber(const char * dev, const char * name, double values[],
             EqPENP.setState(IPS_OK);
 
             INDI::IEquatorialCoordinates epochPos { EqPENP[AXIS_RA].getValue(), EqPENP[AXIS_DE].getValue() }, J2000Pos { 0, 0 };
-            INDI::ObservedToJ2000(&epochPos, ln_get_julian_from_sys(), &J2000Pos);
+            INDI::ObservedToJ2000(&epochPos, m_Clock.julianDate(), &J2000Pos);
             m_CurrentRA  = J2000Pos.rightascension;
             m_CurrentDEC = J2000Pos.declination;
             m_UsePE = true;
@@ -696,34 +703,43 @@ bool GuideSim::ISNewSwitch(const char * dev, const char * name, ISState * states
     if (dev != nullptr && strcmp(dev, getDeviceName()) == 0)
     {
 
-        if (SimulateRgbSP.isNameMatch(name))
+        if (SimTestsSP.isNameMatch(name))
         {
-            SimulateRgbSP.update(states, names, n);
-            int index = SimulateRgbSP.findOnSwitchIndex();
-            if (index == -1)
-            {
-                SimulateRgbSP.setState(IPS_ALERT);
-                LOG_INFO("Cannot determine whether RGB simulation should be switched on or off.");
-                SimulateRgbSP.apply();
-                return false;
-            }
+            SimTestsSP.update(states, names, n);
 
-            m_SimulateRGB = index == 0;
+            // RGB
+            if (SimTestsSP[SIM_TESTS_RGB].getState() == ISS_ON)
+            {
+                m_SimulateRGB = true;
+                SimTestsSP[SIM_TESTS_RGB].setState(ISS_ON);
+            }
+            else
+            {
+                m_SimulateRGB = false;
+                SimTestsSP[SIM_TESTS_RGB].setState(ISS_OFF);
+            }
             setRGB(m_SimulateRGB);
 
-            SimulateRgbSP[SIMULATE_YES].setState(m_SimulateRGB ? ISS_ON : ISS_OFF);
-            SimulateRgbSP[SIMULATE_NO].setState(m_SimulateRGB ? ISS_OFF : ISS_ON);
-            SimulateRgbSP.setState(IPS_OK);
-            SimulateRgbSP.apply();
+            // Crash
+            if (SimTestsSP[SIM_TESTS_CRASH].getState() == ISS_ON)
+            {
+                abort();
+            }
 
-            return true;
-        }
+            // Timeout
+            if (SimTestsSP[SIM_TESTS_TIMEOUT].getState() == ISS_ON)
+            {
+                m_SimulateTimeout = true;
+                SimTestsSP[SIM_TESTS_TIMEOUT].setState(ISS_ON);
+            }
+            else
+            {
+                m_SimulateTimeout = false;
+                SimTestsSP[SIM_TESTS_TIMEOUT].setState(ISS_OFF);
+            }
 
-        if (ToggleTimeoutSP.isNameMatch(name))
-        {
-            ToggleTimeoutSP.update(states, names, n);
-            ToggleTimeoutSP.setState(IPS_OK);
-            ToggleTimeoutSP.apply();
+            SimTestsSP.setState(IPS_OK);
+            SimTestsSP.apply();
             return true;
         }
     }
@@ -765,7 +781,7 @@ bool GuideSim::ISSnoopDevice(XMLEle * root)
         if (rc_ra == 0 && rc_de == 0)
         {
             INDI::IEquatorialCoordinates epochPos { newra, newdec }, J2000Pos { 0, 0 };
-            INDI::ObservedToJ2000(&epochPos, ln_get_julian_from_sys(), &J2000Pos);
+            INDI::ObservedToJ2000(&epochPos, m_Clock.julianDate(), &J2000Pos);
             raPE  = J2000Pos.rightascension;
             decPE = J2000Pos.declination;
 
@@ -804,8 +820,6 @@ bool GuideSim::saveConfigItems(FILE * fp)
     // Gain
     GainNP.save(fp);
 
-    // RGB
-    SimulateRgbSP.save(fp);
 
     return true;
 }

@@ -20,7 +20,7 @@ class MockCCDSimDriver: public CCDSim
         void testProperties()
         {
             auto p = getNumber("SIMULATOR_SETTINGS");
-            ASSERT_NE(p, nullptr);
+            ASSERT_TRUE(p.isValid());
             ASSERT_NE(p.findWidgetByName("SIM_XRES"), nullptr);
             ASSERT_NE(p.findWidgetByName("SIM_YRES"), nullptr);
             ASSERT_NE(p.findWidgetByName("SIM_XSIZE"), nullptr);
@@ -338,6 +338,62 @@ TEST_F(SkyRendererTest, star_zero_beyond_render_box)
     }
 }
 
+// Regression guard for indilib/indi#2465: the PSF must be centred on the true
+// (sub-pixel) star position, not snapped to the truncated integer pixel. If the
+// fractional part of the coordinate is discarded, a sub-pixel shift produces no
+// change in the rendered centroid, which quantised guide-sim drift to a lattice
+// and broke calibration.
+TEST_F(SkyRendererTest, star_centroid_tracks_subpixel_shift)
+{
+    int const xres = 201;
+    int const yres = 201;
+
+    RenderConfig cfg;
+    cfg.maxVal        = 65000;
+    cfg.saturationMag = 0.0f;
+    cfg.limitingMag   = 20.0f;
+    cfg.seeing        = 3.0f;
+    renderer.setConfig(cfg);
+    renderer.setImageScale(1.0f, 1.0f);
+
+    // Flux-weighted X centroid of the whole frame.
+    auto centroidX = [this](int nx, int ny) -> double
+    {
+        uint16_t *buf = fb();
+        double sumWeighted = 0.0;
+        double sumFlux     = 0.0;
+        for (int y = 0; y < ny; y++)
+            for (int x = 0; x < nx; x++)
+            {
+                double const v = buf[y * nx + x];
+                sumWeighted += v * x;
+                sumFlux     += v;
+            }
+        return sumFlux > 0 ? sumWeighted / sumFlux : -1.0;
+    };
+
+    // Integer y keeps the comparison on the X axis only.
+    float const y = 100.0f;
+
+    setupChip(xres, yres);
+    renderer.drawImageStar(&chip, 6.0f, 100.3f, y, 1.0f);
+    double const cxLow = centroidX(xres, yres);
+
+    setupChip(xres, yres);
+    renderer.drawImageStar(&chip, 6.0f, 100.7f, y, 1.0f);
+    double const cxHigh = centroidX(xres, yres);
+
+    ASSERT_GT(cxLow, 0.0);
+    ASSERT_GT(cxHigh, 0.0);
+
+    // Each centroid should sit near its true sub-pixel position...
+    EXPECT_NEAR(cxLow, 100.3, 0.15);
+    EXPECT_NEAR(cxHigh, 100.7, 0.15);
+    // ...and, crucially, the 0.4 px shift must be reflected in the render.
+    // The pre-fix code snapped both to pixel 100, giving a zero difference.
+    EXPECT_GT(cxHigh - cxLow, 0.2);
+}
+
 TEST_F(SkyRendererTest, star_flux_scales_with_exposure)
 {
     int const xres = 33;
@@ -550,10 +606,10 @@ TEST_F(SkyRendererTest, draw_star_benchmark)
     int const loops = 200000;
     for (int i = 0; i < loops; i++)
     {
-        float const m = (15.0f * rand()) / RAND_MAX;
-        float const x = static_cast<float>(xres * rand()) / RAND_MAX;
-        float const y = static_cast<float>(yres * rand()) / RAND_MAX;
-        float const e = (100.0f * rand()) / RAND_MAX;
+        float const m = (15.0f * rand()) / static_cast<float>(RAND_MAX);
+        float const x = static_cast<float>(xres * rand()) / static_cast<float>(RAND_MAX);
+        float const y = static_cast<float>(yres * rand()) / static_cast<float>(RAND_MAX);
+        float const e = (100.0f * rand()) / static_cast<float>(RAND_MAX);
         renderer.drawImageStar(&chip, m, x, y, e);
     }
     auto const after = std::chrono::steady_clock::now();

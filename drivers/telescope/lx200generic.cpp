@@ -33,6 +33,7 @@ Updated driver to use INDI::Telescope (JM)
 #include "lx200_16.h"
 #include "lx200_OnStep.h"
 #include "lx200_OpenAstroTech.h"
+#include "lx200_proxisky.h"
 #include "lx200ap_v2.h"
 #include "lx200ap_gtocp2.h"
 #include "lx200classic.h"
@@ -51,6 +52,7 @@ Updated driver to use INDI::Telescope (JM)
 #include <unistd.h>
 #include "eq500x.h"
 #include "lx200_esp32go.h"
+#include "toup_sh20.h"
 
     /* There is _one_ binary for all LX200 drivers, but each binary is renamed
     ** to its device name (i.e. lx200gps, lx200_16..etc). The main function will
@@ -96,6 +98,11 @@ static class Loader
             {
                 IDLog("initializing from LX200 OnStep device...\n");
                 telescope.reset(new LX200_OnStep());
+            }
+            else if (strstr(getProgName(), "indi_lx200_proxisky"))
+            {
+                IDLog("initializing from Proxisky UMi device...\n");
+                telescope.reset(new LX200_Proxisky());
             }
             else if (strstr(getProgName(), "indi_lx200gps"))
             {
@@ -186,6 +193,11 @@ static class Loader
             {
                 IDLog("initializing for ESP32go mount...\n");
                 telescope.reset(new LX200_esp32go());
+            }
+            else if (strstr(getProgName(), "indi_touptek_sh20"))
+            {
+                IDLog("initializing for TOUPTEK SH20 mount...\n");
+                telescope.reset(new ToupSH20());
             }
             // be nice and give them a generic device
             else

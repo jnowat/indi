@@ -41,8 +41,8 @@ using namespace INDI::AlignmentSubsystem;
 static std::unique_ptr<SkywatcherAPIMount> SkywatcherAPIMountPtr(new SkywatcherAPIMount());
 
 /* Preset Slew Speeds */
-#define SLEWMODES 9
-static double SlewSpeeds[SLEWMODES] = { 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 600.0 };
+#define SLEWMODES 10
+static double SlewSpeeds[SLEWMODES] = { 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 600.0, 800.0 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 ///
@@ -102,8 +102,7 @@ bool SkywatcherAPIMount::initProperties()
 
     for (size_t i = 0; i < SlewRateSP.count(); ++i)
     {
-        // sprintf(SlewRateSP.sp[i].label, "%.fx", SlewSpeeds[i]);
-        SlewRateSP[i].setLabel(std::to_string(SlewSpeeds[i]) + "x");
+        SlewRateSP[i].setLabel(std::to_string(static_cast<int>(SlewSpeeds[i])) + "x");
         SlewRateSP[i].setAux(&SlewSpeeds[i]);
     }
     SlewRateSP[SlewRateSP.count() - 1].setName("SLEW_MAX");
@@ -676,7 +675,7 @@ double SkywatcherAPIMount::GetSlewRate()
 bool SkywatcherAPIMount::MoveNS(INDI_DIR_NS dir, TelescopeMotionCommand command)
 {
     double speed =
-        (dir == DIRECTION_NORTH) ? GetSlewRate() * LOW_SPEED_MARGIN / 2 : -GetSlewRate() * LOW_SPEED_MARGIN / 2;
+        (dir == DIRECTION_NORTH) ? GetSlewRate() * SIDEREALRATE : -GetSlewRate() * SIDEREALRATE;
     const char *dirStr = (dir == DIRECTION_NORTH) ? "North" : "South";
 
     switch (command)
@@ -685,7 +684,7 @@ bool SkywatcherAPIMount::MoveNS(INDI_DIR_NS dir, TelescopeMotionCommand command)
             DEBUGF(DBG_SCOPE, "Starting Slew %s", dirStr);
             // Ignore the silent mode because MoveNS() is called by the manual motion UI controls.
             Slew(AXIS2, speed, true);
-            m_ManualMotionActive = true;
+            m_ManualMotionActive[AXIS2] = true;
             break;
 
         case MOTION_STOP:
@@ -703,7 +702,7 @@ bool SkywatcherAPIMount::MoveNS(INDI_DIR_NS dir, TelescopeMotionCommand command)
 bool SkywatcherAPIMount::MoveWE(INDI_DIR_WE dir, TelescopeMotionCommand command)
 {
     double speed =
-        (dir == DIRECTION_WEST) ? -GetSlewRate() * LOW_SPEED_MARGIN / 2 : GetSlewRate() * LOW_SPEED_MARGIN / 2;
+        (dir == DIRECTION_WEST) ? -GetSlewRate() * SIDEREALRATE : GetSlewRate() * SIDEREALRATE;
     const char *dirStr = (dir == DIRECTION_WEST) ? "West" : "East";
 
     switch (command)
@@ -712,7 +711,7 @@ bool SkywatcherAPIMount::MoveWE(INDI_DIR_WE dir, TelescopeMotionCommand command)
             DEBUGF(DBG_SCOPE, "Starting Slew %s", dirStr);
             // Ignore the silent mode because MoveNS() is called by the manual motion UI controls.
             Slew(AXIS1, speed, true);
-            m_ManualMotionActive = true;
+            m_ManualMotionActive[AXIS1] = true;
             break;
 
         case MOTION_STOP:
@@ -778,6 +777,7 @@ bool SkywatcherAPIMount::SetTrackEnabled(bool enabled)
         SlowStop(AXIS1);
         SlowStop(AXIS2);
         TrackState = SCOPE_IDLE;
+        m_ManualMotionActive[AXIS1] = m_ManualMotionActive[AXIS2] = false;
 
         if (GuideNSNP.getState() == IPS_BUSY || GuideWENP.getState() == IPS_BUSY)
         {
@@ -1052,6 +1052,7 @@ bool SkywatcherAPIMount::Abort()
     SlowStop(AXIS1);
     SlowStop(AXIS2);
     TrackState = SCOPE_IDLE;
+    m_ManualMotionActive[AXIS1] = m_ManualMotionActive[AXIS2] = false;
 
     if (GuideNSNP.getState() == IPS_BUSY || GuideWENP.getState() == IPS_BUSY)
     {
@@ -1092,15 +1093,27 @@ void SkywatcherAPIMount::TimerHit()
         case SCOPE_TRACKING:
         {
             // Check if manual motion in progress but we stopped
-            if (m_ManualMotionActive && !IsInMotion(AXIS1) && !IsInMotion(AXIS2))
+            bool manualMotionStopped = false;
+            // Check each axis individually - the other may still be driven (tracking) and never stop on its own.
+            for (AXISID axis : { AXIS1, AXIS2 })
             {
-                m_ManualMotionActive = false;
+                auto &movementSP = (axis == AXIS1) ? MovementWESP : MovementNSSP;
+                // check that for this axis the motor is not in motion and the user isn't feeding input (movement switch prop)
+                if (m_ManualMotionActive[axis] && !IsInMotion(axis) && movementSP.getState() != IPS_BUSY)
+                {
+                    m_ManualMotionActive[axis] = false;
+                    manualMotionStopped = true;
+                }
+            }
+            // if either axis was being moved manually but has now stopped, reset tracking.
+            if (manualMotionStopped)
+            {
                 resetTracking();
                 m_SkyTrackingTarget.rightascension = EqNP[AXIS_RA].getValue();
                 m_SkyTrackingTarget.declination = EqNP[AXIS_DE].getValue();
             }
             // If we're manually moving by WESN controls, update the tracking coordinates.
-            if (m_ManualMotionActive)
+            if (m_ManualMotionActive[AXIS1] || m_ManualMotionActive[AXIS2])
             {
                 break;
             }
@@ -1615,8 +1628,8 @@ bool SkywatcherAPIMount::trackByRate(AXISID axis, double rate)
     if (AxesStatus[axis].FullStop && rate == 0)
         return true;
     // If rate is zero, or direction changed then we should stop.
-    else if (!AxesStatus[axis].FullStop && (rate == 0 || (AxesStatus[AXIS1].SlewingForward && rate < 0)
-                                            || (!AxesStatus[AXIS1].SlewingForward && rate > 0)))
+    else if (!AxesStatus[axis].FullStop && (rate == 0 || (AxesStatus[axis].SlewingForward && rate < 0)
+                                            || (!AxesStatus[axis].SlewingForward && rate > 0)))
     {
         SlowStop(axis);
         LOGF_DEBUG("Tracking -> %s direction change.", (axis == AXIS1 ? "Axis 1" : "Axis 2"));
@@ -1628,12 +1641,16 @@ bool SkywatcherAPIMount::trackByRate(AXISID axis, double rate)
                           AxisOneEncoderValuesN[MICROSTEPS_PER_ARCSEC].value : AxisTwoEncoderValuesN[MICROSTEPS_PER_ARCSEC].value)));
     auto clockRate = (StepperClockFrequency[axis] / std::max(1u, stepsPerSecond));
 
-    SetClockTicksPerMicrostep(axis, clockRate);
     if (AxesStatus[axis].FullStop)
     {
         LOGF_DEBUG("Tracking -> %s restart.", (axis == AXIS1 ? "Axis 1" : "Axis 2"));
         SetAxisMotionMode(axis, '1', Direction);
+        SetClockTicksPerMicrostep(axis, clockRate);
         StartAxisMotion(axis);
+    }
+    else
+    {
+        SetClockTicksPerMicrostep(axis, clockRate);
     }
 
     return true;

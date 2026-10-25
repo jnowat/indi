@@ -21,6 +21,8 @@
 #pragma once
 
 #include "connectioninterface.h"
+#include "indipropertytext.h"
+#include "indipropertyswitch.h"
 
 #include <string>
 #include <vector>
@@ -44,7 +46,7 @@ class Serial : public Interface
          * \brief Supported baud rates
          * \note: Default baud rate is 9600. To change default baud rate, use setDefaultBaudrate(..) function.
          */
-        typedef enum { B_9600, B_19200, B_38400, B_57600, B_115200, B_230400 } BaudRate;
+        typedef enum { B_1200, B_2400, B_4800, B_9600, B_19200, B_38400, B_57600, B_115200, B_230400, B_COUNT } BaudRate;
 
         Serial(INDI::DefaultDevice *dev, IPerm permission = IP_RW);
         virtual ~Serial();
@@ -72,7 +74,7 @@ class Serial : public Interface
          */
         virtual const char *port()
         {
-            return PortT[0].text;
+            return PortTP[0].getText();
         }
 
         /**
@@ -97,8 +99,9 @@ class Serial : public Interface
         /**
          * @brief setPortMatchPattern Set a regex pattern used to automatically select a serial port
          * from the discovered system ports. When the system ports are scanned, if any port path
-         * matches this pattern AND no previously-saved config port is available, the first matching
-         * port is automatically selected as the active port.
+         * matches this pattern AND the previously-saved config port is no longer available (neither
+         * detected among the system ports nor still present on disk), the first matching port is
+         * automatically selected as the active port.
          *
          * This is particularly useful for devices whose USB serial paths embed the device name
          * (e.g. Pegasus Astro devices under /dev/serial/by-id/), allowing the correct port to be
@@ -187,20 +190,16 @@ class Serial : public Interface
         };
 
         // Device physical port
-        ITextVectorProperty PortTP;
-        IText PortT[1] {};
+        INDI::PropertyText PortTP {1};
 
-        ISwitch BaudRateS[6];
-        ISwitchVectorProperty BaudRateSP;
+        INDI::PropertySwitch BaudRateSP {B_COUNT};
 
-        ISwitch AutoSearchS[2];
-        ISwitchVectorProperty AutoSearchSP;
+        INDI::PropertySwitch AutoSearchSP {2};
 
-        ISwitch *SystemPortS = nullptr;
-        ISwitchVectorProperty SystemPortSP;
+        // Dynamically populated from the ports detected on the system
+        INDI::PropertySwitch SystemPortSP {0};
 
-        ISwitch RefreshS[1];
-        ISwitchVectorProperty RefreshSP;
+        INDI::PropertySwitch RefreshSP {1};
 
         int PortFD = -1;
 

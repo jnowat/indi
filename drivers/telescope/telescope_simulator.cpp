@@ -255,6 +255,8 @@ bool ScopeSim::updateProperties()
             m_targetDEC  = m_currentDEC;
         }
 
+        // A new connection starts from the system clock until the client sets TIME_UTC
+        alignment.clockOffsetDays = 0;
         sendTimeFromSystem();
 
 #ifdef USE_SIM_TAB
@@ -317,7 +319,7 @@ void ScopeSim::updateCurrentCoordsFromAxes()
             INDI::IEquatorialCoordinates raCoords{ encoderRA, instDec.Degrees() };
             TelescopeDirectionVector tdv =
                 TelescopeDirectionVectorFromEquatorialCoordinates(raCoords);
-            corrected = TransformTelescopeToCelestialJD(tdv, corrRA, corrDec, ln_get_julian_from_sys());
+            corrected = TransformTelescopeToCelestialJD(tdv, corrRA, corrDec, alignment.julianDate());
         }
         if (corrected)
         {
@@ -341,7 +343,7 @@ bool ScopeSim::ReadScopeStatus()
             TrackModeSP.findOnSwitchIndex() != TRACK_CUSTOM)
     {
         double dt      = getCurrentPollingPeriod() / 1000.0;
-        double JDnow   = ln_get_julian_from_sys();
+        double JDnow   = alignment.julianDate();
         double JDoffset = dt / 86400.0;
 
         // RA drift rate relative to sidereal for the selected track mode, in hours/sec.
@@ -571,7 +573,7 @@ bool ScopeSim::Goto(double r, double d)
     if (GetAlignmentDatabase().size() >= 1)
     {
         TelescopeDirectionVector tdv;
-        if (TransformCelestialToTelescopeJD(r, d, ln_get_julian_from_sys(), tdv))
+        if (TransformCelestialToTelescopeJD(r, d, alignment.julianDate(), tdv))
         {
             // The TDV now encodes encoder RA (time-stable), so decode with
             // EquatorialCoordinatesFromTelescopeDirectionVector — no LST conversion needed.
@@ -601,11 +603,19 @@ bool ScopeSim::Sync(double ra, double dec)
     // stored offset sky_RA − encoder_RA remains constant across iterations, so successive
     // sync+goto cycles converge rather than diverging.
 
-    if (m_MountType == Alignment::MOUNT_TYPE::ALTAZ)
+    AlignmentDatabaseEntry entry;
+    entry.ObservationJulianDate = alignment.julianDate();
+    entry.RightAscension        = ra;
+    entry.Declination           = dec;
+    entry.PrivateDataSize       = 0;
+
+    const bool altAz    = (m_MountType == Alignment::MOUNT_TYPE::ALTAZ);
+    const double indi_az  = axisPrimary.position.Degrees();
+    const double indi_alt = axisSecondary.position.Degrees();
+    if (altAz)
     {
-        double indi_az  = axisPrimary.position.Degrees();
-        double indi_alt = axisSecondary.position.Degrees();
-        AddAlignmentEntryAltAz(ra, dec, indi_alt, indi_az);  // handles DB + Initialise
+        INDI::IHorizontalCoordinates altAzCoords { indi_az, indi_alt };
+        entry.TelescopeDirection = TelescopeDirectionVectorFromAltitudeAzimuth(altAzCoords);
     }
     else
     {
@@ -620,22 +630,36 @@ bool ScopeSim::Sync(double ra, double dec)
 
         double encoderRA = (alignment.lst() - instHA).Hours();
         INDI::IEquatorialCoordinates raCoords{ encoderRA, instDec.Degrees() };
-        TelescopeDirectionVector tdv =
-            TelescopeDirectionVectorFromEquatorialCoordinates(raCoords);
+        entry.TelescopeDirection = TelescopeDirectionVectorFromEquatorialCoordinates(raCoords);
+    }
 
-        AlignmentDatabaseEntry entry;
-        entry.ObservationJulianDate = ln_get_julian_from_sys();
-        entry.RightAscension        = ra;
-        entry.Declination           = dec;
-        entry.TelescopeDirection    = tdv;
-        entry.PrivateDataSize       = 0;
+    // A new sync supersedes older sync points at (nearly) the same place: the latest plate solve is the
+    // better measurement. Previously the new point was silently dropped as a duplicate while this function
+    // still reported success, so re-syncing near an existing point had no effect on the pointing model.
+    // ALTAZ entries need the geographic reference position (see AddAlignmentEntryAltAz); without it
+    // nothing is stored and the existing points are kept.
+    INDI::IGeographicCoordinates referencePosition;
+    if (altAz && !GetDatabaseReferencePosition(referencePosition))
+    {
+        LOG_WARN("Sync not stored in the alignment database: geographic location is not known yet.");
+    }
+    else
+    {
+        const size_t before = GetAlignmentDatabase().size();
+        RemoveSyncPoint(entry);
+        const int replaced = static_cast<int>(before - GetAlignmentDatabase().size());
 
-        if (!CheckForDuplicateSyncPoint(entry))
+        if (altAz)
+            AddAlignmentEntryAltAz(ra, dec, indi_alt, indi_az);  // handles DB + Initialise
+        else
         {
             GetAlignmentDatabase().push_back(entry);
             UpdateSize();
             Initialise(this);
         }
+
+        if (replaced > 0)
+            LOGF_INFO("Sync replaced %d older alignment point(s) at the same position.", replaced);
     }
 
     // Keep the ALTAZ tracking servo on the current instrument position after sync.
@@ -1200,6 +1224,17 @@ bool ScopeSim::updateLocation(double latitude, double longitude, double elevatio
     return true;
 }
 
+bool ScopeSim::updateTime(ln_date *utc, double utc_offset)
+{
+    INDI_UNUSED(utc_offset);
+
+    // Follow the client's clock: the sky (LST, hour angle, pier side) moves on from the time the client set,
+    // so it agrees with the client instead of the system clock
+    alignment.clockOffsetDays = ln_get_julian_day(utc) - ln_get_julian_from_sys();
+    LOGF_DEBUG("Simulated clock is %.3f s from the system clock", alignment.clockOffsetDays * 86400);
+    return true;
+}
+
 bool ScopeSim::updateMountAndPierSide()
 {
 #ifdef USE_SIM_TAB
@@ -1212,6 +1247,7 @@ bool ScopeSim::updateMountAndPierSide()
     if (mountType == m_MountType && pierSide == m_PierSide)
         return true;
 
+    const int previousMountType = m_MountType;
     m_MountType = mountType;
     m_PierSide = pierSide;
 
@@ -1234,6 +1270,25 @@ bool ScopeSim::updateMountAndPierSide()
         alignment.mountType == Alignment::MOUNT_TYPE::ALTAZ
         ? INDI::AlignmentSubsystem::MathPluginManagement::ALTAZ
         : INDI::AlignmentSubsystem::MathPluginManagement::EQUATORIAL);
+
+#ifdef USE_SIM_TAB
+    // Sync points store the telescope direction in the encoding of the mount geometry that was active
+    // when they were taken: Az/Alt for ALTAZ, encoder RA/Dec for the equatorial types (see Sync()).
+    // After switching between ALTAZ and an equatorial type, those entries are decoded with the wrong
+    // encoding and every GoTo lands at an unrelated sky position. They cannot be re-encoded reliably,
+    // so drop them. EQ_GEM <-> EQ_FORK share the RA/Dec encoding and keep their sync points.
+    // previousMountType is -1 during initial config load, so a restored database is never discarded.
+    const bool wasAltAz = (previousMountType == Alignment::MOUNT_TYPE::ALTAZ);
+    const bool isAltAz  = (mountType == Alignment::MOUNT_TYPE::ALTAZ);
+    if (previousMountType >= 0 && wasAltAz != isAltAz && !GetAlignmentDatabase().empty())
+    {
+        LOGF_WARN("Mount type changed between ALTAZ and equatorial: clearing %d alignment sync point(s) "
+                  "recorded for the previous mount geometry.", static_cast<int>(GetAlignmentDatabase().size()));
+        GetAlignmentDatabase().clear();
+        UpdateSize();
+        Initialise(this);
+    }
+#endif
 
     // Set the park data type appropriate for the mount geometry.
     if (mountType == static_cast<int>(Alignment::MOUNT_TYPE::ALTAZ))

@@ -48,7 +48,7 @@ endif()
 # ####################################  INDI version  ################################################
 set(CMAKE_INDI_VERSION_MAJOR 2)
 set(CMAKE_INDI_VERSION_MINOR 2)
-set(CMAKE_INDI_VERSION_RELEASE 3)
+set(CMAKE_INDI_VERSION_RELEASE 6)
 
 set(INDI_SOVERSION ${CMAKE_INDI_VERSION_MAJOR})
 set(CMAKE_INDI_VERSION_STRING "${CMAKE_INDI_VERSION_MAJOR}.${CMAKE_INDI_VERSION_MINOR}.${CMAKE_INDI_VERSION_RELEASE}")
@@ -75,6 +75,17 @@ set(INCLUDE_INSTALL_DIR "${CMAKE_INSTALL_PREFIX}/include")
 
 if(APPLE)
     set(CMAKE_SHARED_LINKER_FLAGS "-undefined dynamic_lookup")
+
+    # INDI libraries use @rpath install names (e.g. @rpath/libindidriver.2.dylib).
+    # CMake strips the build RPATH on install, leaving installed binaries with no LC_RPATH,
+    # so add the INDI library directory and the directories of linked external libraries.
+    # Respect any value passed on the command line (e.g. by Craft).
+    if(NOT DEFINED CMAKE_INSTALL_RPATH)
+        set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR}")
+    endif()
+    if(NOT DEFINED CMAKE_INSTALL_RPATH_USE_LINK_PATH)
+        set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+    endif()
 endif(APPLE)
 
 # #################################  Install Directories  ###########################################
@@ -381,18 +392,46 @@ if(INDI_BUILD_DRIVERS OR INDI_BUILD_COMMON)
         # ##################################################################################################
         # ########################################  Tests  #################################################
         # ##################################################################################################
-        if(DEFINED GTEST_ROOT)
-            message(STATUS "Using GTEST from ${GTEST_ROOT}")
-            add_subdirectory(${GTEST_ROOT}
-                "${CMAKE_CURRENT_BINARY_DIR}/googletest" EXCLUDE_FROM_ALL)
-            set(GTEST_FOUND true)
-        else(DEFINED GTEST_ROOT)
-            find_package(GTest)
-        endif()
+        # GoogleTest is built together with the tests so they never pick up a mismatched system
+        # installation. Set GTEST_ROOT to build from a local googletest source tree instead of
+        # downloading the pinned release.
+        if(BUILD_TESTING AND (INDI_BUILD_UNITTESTS OR INDI_BUILD_INTEGTESTS))
+            set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 
-        find_package(GMock)
+            if(DEFINED GTEST_ROOT)
+                message(STATUS "Using GTEST from ${GTEST_ROOT}")
+                add_subdirectory(${GTEST_ROOT}
+                    "${CMAKE_CURRENT_BINARY_DIR}/googletest" EXCLUDE_FROM_ALL)
+                set(INDI_GTEST_SOURCE_DIR ${GTEST_ROOT})
+            else(DEFINED GTEST_ROOT)
+                include(FetchContent)
+                FetchContent_Declare(googletest
+                    URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz
+                    URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+                    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+                FetchContent_MakeAvailable(googletest)
+                set(INDI_GTEST_SOURCE_DIR ${googletest_SOURCE_DIR})
+            endif()
 
-        if(GTEST_FOUND AND BUILD_TESTING)
+            # The directory-wide include paths above (e.g. CFITSIO/libnova in /usr/local/include) are
+            # searched before a target's own include paths, so a system googletest installed there
+            # would shadow the bundled headers and fail to compile against the bundled sources.
+            # Put the bundled headers first, both for googletest itself and for the test targets.
+            # googletest exports its headers as SYSTEM (-isystem), which compilers only search after
+            # every -I path, so drop that too or /usr/local/include would still win.
+            set(INDI_GTEST_INCLUDE_DIRS
+                ${INDI_GTEST_SOURCE_DIR}/googletest/include
+                ${INDI_GTEST_SOURCE_DIR}/googlemock/include)
+            foreach(gtest_target gtest gtest_main gmock gmock_main)
+                set_property(TARGET ${gtest_target} PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "")
+                target_include_directories(${gtest_target} BEFORE PRIVATE ${INDI_GTEST_INCLUDE_DIRS})
+            endforeach()
+            include_directories(BEFORE ${INDI_GTEST_INCLUDE_DIRS})
+
+            set(GTEST_BOTH_LIBRARIES GTest::gtest GTest::gtest_main)
+            set(GTEST_LIBRARIES GTest::gtest)
+            set(GMOCK_LIBRARIES GTest::gmock)
+
             if(INDI_BUILD_UNITTESTS)
                 message(STATUS "Building unit tests")
                 add_subdirectory(test)
@@ -406,12 +445,9 @@ if(INDI_BUILD_DRIVERS OR INDI_BUILD_COMMON)
             else(INDI_BUILD_INTEGTESTS)
                 message(STATUS "Not building integration tests")
             endif(INDI_BUILD_INTEGTESTS)
-
-        elseif(NOT BUILD_TESTING)
-            message(STATUS "GTEST found, but tests disabled")
         else()
-            message(STATUS "GTEST not found, not building tests")
-        endif(GTEST_FOUND AND BUILD_TESTING)
+            message(STATUS "Not building tests (enable with -DINDI_BUILD_UNITTESTS=ON or -DINDI_BUILD_INTEGTESTS=ON)")
+        endif()
     endif(WIN32 OR ANDROID)
 endif(INDI_BUILD_DRIVERS OR INDI_BUILD_COMMON)
 

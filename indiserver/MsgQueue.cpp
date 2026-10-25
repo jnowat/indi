@@ -436,7 +436,7 @@ size_t MsgQueue::doRead(char * buf, size_t nr)
     if (!useSharedBuffer)
     {
         /* read client - works for all kinds of fds incl pipe*/
-        return read(rFd, buf, sizeof(buf));
+        return read(rFd, buf, nr);
     }
     else
     {
@@ -522,7 +522,7 @@ void MsgQueue::readFromFd()
     }
 
     /* process XML chunk */
-    char err[1024];
+    char err[XML_ERROR_SIZE];
     XMLEle **nodes = parseXMLChunk(lp, buf, nr, err);
     if (!nodes)
     {

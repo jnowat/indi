@@ -45,6 +45,7 @@
 #include <ctime>
 #include <cmath>
 #include <sys/time.h>
+#include <inttypes.h>
 
 #ifdef __linux__
 #include <asm/types.h> /* for videodev2.h */
@@ -1405,8 +1406,8 @@ void V4L2_Base::getinputs(ISwitchVectorProperty * inputssp)
             break;
 
         /* Store input description */
-        strncpy(inputs[input_avail.index].name, (const char *)input_avail.name, MAXINDINAME);
-        strncpy(inputs[input_avail.index].label, (const char *)input_avail.name, MAXINDILABEL);
+        snprintf(inputs[input_avail.index].name, MAXINDINAME, "%s", (const char *)input_avail.name);
+        snprintf(inputs[input_avail.index].label, MAXINDILABEL, "%s", (const char *)input_avail.name);
     }
 
     /* Free inputs before replacing */
@@ -1478,8 +1479,8 @@ void V4L2_Base::getcaptureformats(ISwitchVectorProperty * captureformatssp)
             break;
 
         /* Store format description */
-        strncpy(formats[fmt_avail.index].name, (const char *)fmt_avail.description, MAXINDINAME);
-        strncpy(formats[fmt_avail.index].label, (const char *)fmt_avail.description, MAXINDILABEL);
+        snprintf(formats[fmt_avail.index].name, MAXINDINAME, "%s", (const char *)fmt_avail.description);
+        snprintf(formats[fmt_avail.index].label, MAXINDILABEL, "%s", (const char *)fmt_avail.description);
 
         /* And store pixel format for reference */
         /* FIXME: store pixel format as void pointer to avoid that malloc */
@@ -2117,7 +2118,7 @@ void V4L2_Base::enumerate_menu()
             {
                 char menuname[19];
                 menuname[18] = '\0';
-                snprintf(menuname, 19, "0x%016llX", querymenu.value);
+                snprintf(menuname, 19, "0x%016" PRIX64, static_cast<int64_t>(querymenu.value));
                 cerr << "  " << menuname << endl;
             }
 #endif
@@ -2303,7 +2304,7 @@ void V4L2_Base::queryControls(INumberVectorProperty * nvp, unsigned int * nnumbe
                         }
                         if (queryctrl.type == V4L2_CTRL_TYPE_INTEGER_MENU)
                         {
-                            snprintf(sname, 19, "0x%016llX", querymenu.value);
+                            snprintf(sname, 19, "0x%016" PRIX64, static_cast<int64_t>(querymenu.value));
                             sname[31] = '\0';
                         }
 #else
@@ -2458,7 +2459,7 @@ void V4L2_Base::queryControls(INumberVectorProperty * nvp, unsigned int * nnumbe
                         }
                         if (queryctrl.type == V4L2_CTRL_TYPE_INTEGER_MENU)
                         {
-                            snprintf(sname, 19, "0x%016llX", querymenu.value);
+                            snprintf(sname, 19, "0x%016" PRIX64, static_cast<int64_t>(querymenu.value));
                             sname[31] = '\0';
                         }
 #else
@@ -2536,8 +2537,8 @@ int V4L2_Base::queryINTControls(INumberVectorProperty * nvp)
                             (unsigned int *)malloc(sizeof(unsigned int)) :
                             (unsigned int *)realloc(num_ctrls, (nnum + 1) * sizeof(unsigned int));
 
-                strncpy(numbers[nnum].name, ((char *)queryctrl.name), MAXINDINAME);
-                strncpy(numbers[nnum].label, ((char *)queryctrl.name), MAXINDILABEL);
+                snprintf(numbers[nnum].name, MAXINDINAME, "%s", (const char *)queryctrl.name);
+                snprintf(numbers[nnum].label, MAXINDILABEL, "%s", (const char *)queryctrl.name);
                 strncpy(numbers[nnum].format, "%0.f", MAXINDIFORMAT);
                 numbers[nnum].min   = queryctrl.minimum;
                 numbers[nnum].max   = queryctrl.maximum;
@@ -2587,8 +2588,8 @@ int V4L2_Base::queryINTControls(INumberVectorProperty * nvp)
                             (unsigned int *)malloc(sizeof(unsigned int)) :
                             (unsigned int *)realloc(num_ctrls, (nnum + 1) * sizeof(unsigned int));
 
-                strncpy(numbers[nnum].name, ((char *)queryctrl.name), MAXINDINAME);
-                strncpy(numbers[nnum].label, ((char *)queryctrl.name), MAXINDILABEL);
+                snprintf(numbers[nnum].name, MAXINDINAME, "%s", (const char *)queryctrl.name);
+                snprintf(numbers[nnum].label, MAXINDILABEL, "%s", (const char *)queryctrl.name);
                 strncpy(numbers[nnum].format, "%0.f", MAXINDIFORMAT);
                 numbers[nnum].min   = queryctrl.minimum;
                 numbers[nnum].max   = queryctrl.maximum;
@@ -2918,7 +2919,7 @@ bool V4L2_Base::queryExtControls(INumberVectorProperty * nvp, unsigned int * nnu
                     }
                     if (queryctrl.type == V4L2_CTRL_TYPE_INTEGER_MENU)
                     {
-                        snprintf(sname, 19, "0x%016llX", querymenu.value);
+                        snprintf(sname, 19, "0x%016" PRIX64, static_cast<int64_t>(querymenu.value));
                         sname[31] = '\0';
                     }
 #else
