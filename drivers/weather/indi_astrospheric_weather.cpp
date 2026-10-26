@@ -72,7 +72,7 @@
 #include "indi_astrospheric_weather.h"
 
 #include <indicom.h>
-#include <httplib.h>
+#include <curl/curl.h>
 #ifdef _USE_SYSTEM_JSONLIB
 #include <nlohmann/json.hpp>
 #else
@@ -473,10 +473,17 @@ bool AstrosphericWeather::saveConfigItems(FILE *fp)
     return true;
 }
 
+static size_t curlWriteCallback(char *ptr, size_t size, size_t nmemb, void *userdata)
+{
+    static_cast<std::string *>(userdata)->append(ptr, size * nmemb);
+    return size * nmemb;
+}
+
 bool AstrosphericWeather::fetchDataFromAPI(std::string &responseBody)
 {
-    const std::string host     = "astrosphericpublicaccess.azurewebsites.net";
-    const std::string endpoint = "/api/GetForecastData_V1";
+    // Astrospheric Data API v2 (HTTPS only). The legacy v1 host
+    // astrosphericpublicaccess.azurewebsites.net was retired in 2026.
+    static const char *API_URL = "https://v2-api-public.astrospheric.com/api/GetForecastData";
 
     double lat = LocationNP[LOCATION_LATITUDE].getValue();
     double lon = LocationNP[LOCATION_LONGITUDE].getValue();
@@ -489,25 +496,56 @@ bool AstrosphericWeather::fetchDataFromAPI(std::string &responseBody)
     payload["Latitude"] = lat;
     payload["Longitude"] = lon;
     payload["APIKey"] = APIKeyTP[0].getText();
+    payload["Variables"] = {"Cloud", "Transparency", "Seeing", "Temperature", "DewPoint", "WindDirection", "Wind"};
     std::string jsonDataString = payload.dump();
 
-    httplib::Client client(host.c_str());
-    client.set_connection_timeout(API_CONNECT_TIMEOUT_SECS, 0);
-    client.set_read_timeout(API_READ_TIMEOUT_SECS, 0);
-    auto res = client.Post(endpoint.c_str(), jsonDataString, "application/json");
-    if (!res)
+    CURL *curl = curl_easy_init();
+    if (!curl)
     {
-        LOGF_ERROR("API request failed: %s", httplib::to_string(res.error()).c_str());
+        LOG_ERROR("API request failed: could not initialise libcurl.");
         return false;
     }
-    if (res->status != 200)
+    struct curl_slist *headers = curl_slist_append(nullptr, "Content-Type: application/json");
+    std::string body;
+    char errbuf[CURL_ERROR_SIZE] = {0};
+    curl_easy_setopt(curl, CURLOPT_URL, API_URL);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonDataString.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(jsonDataString.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(API_CONNECT_TIMEOUT_SECS));
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(API_CONNECT_TIMEOUT_SECS + API_READ_TIMEOUT_SECS));
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(curl);
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK)
     {
-        std::string body = res->body.substr(0, MAX_LOGGED_BODY_CHARS);
-        LOGF_ERROR("API request failed: HTTP %d - %s", res->status, body.empty() ? "(empty body)" : body.c_str());
+        LOGF_ERROR("API request failed: %s", errbuf[0] ? errbuf : curl_easy_strerror(rc));
+        return false;
+    }
+    if (status != 200)
+    {
+        std::string detail = body.substr(0, MAX_LOGGED_BODY_CHARS);
+        try
+        {
+            json e = json::parse(body);
+            if (e.contains("ErrorInfo") && e["ErrorInfo"].is_string())
+                detail = e["ErrorInfo"].get<std::string>().substr(0, MAX_LOGGED_BODY_CHARS);
+        }
+        catch (...) {}
+        const char *hint = status == 403 ? " (invalid API key or monthly credits exhausted)" :
+                           status == 429 ? " (rate limited)" : "";
+        LOGF_ERROR("API request failed: HTTP %ld%s - %s", status, hint, detail.empty() ? "(empty body)" : detail.c_str());
         return false;
     }
 
-    responseBody = res->body;
+    responseBody = std::move(body);
     LOGF_DEBUG("API response received (%zu bytes).", responseBody.size());
     return true;
 }
@@ -519,56 +557,57 @@ bool AstrosphericWeather::parseJSONResponse(const std::string &jsonResponse)
     {
         json j = json::parse(jsonResponse);
 
-        // Validate top-level structure before accessing any forecast arrays.
-        if (!j.contains("UTCStartTime") || !j["UTCStartTime"].is_string())
+        if (j.contains("ErrorInfo") && j["ErrorInfo"].is_string())
         {
-            if (j.contains("Message") && j["Message"].is_string())
-                LOGF_ERROR("Astrospheric API error: %s", j["Message"].get<std::string>().c_str());
-            else if (j.contains("Error") && j["Error"].is_string())
-                LOGF_ERROR("Astrospheric API error: %s", j["Error"].get<std::string>().c_str());
-            else
-                LOG_ERROR("Unexpected API response: missing 'UTCStartTime' field.");
+            LOGF_ERROR("Astrospheric API error: %s", j["ErrorInfo"].get<std::string>().c_str());
             return false;
         }
-        static const char * const REQUIRED_ARRAYS[] = {
-            "RDPS_CloudCover", "RDPS_Temperature", "RDPS_WindVelocity",
-            "RDPS_DewPoint", "RDPS_WindDirection",
-            "Astrospheric_Seeing", "Astrospheric_Transparency"
-        };
-        for (const char *key : REQUIRED_ARRAYS)
+        if (!j.contains("HourlyForecast") || !j["HourlyForecast"].is_array() || j["HourlyForecast"].empty())
         {
-            if (!j.contains(key) || !j[key].is_array() || j[key].empty())
-            {
-                LOGF_ERROR("API response missing or empty forecast array '%s'.", key);
-                return false;
-            }
+            LOG_ERROR("Unexpected API response: missing or empty 'HourlyForecast' array.");
+            return false;
         }
+        const auto &hourly = j["HourlyForecast"];
 
-        std::string utcStartTimeStr = j["UTCStartTime"].get<std::string>();
+        std::string utcStartTimeStr = hourly[0].at("UTCForecastHour").get<std::string>();
         const time_t newStartTime = parseUTCDateTime(utcStartTimeStr);
         if (newStartTime == static_cast<time_t>(-1))
         {
-            LOG_ERROR("Failed to parse UTCStartTime.");
+            LOG_ERROR("Failed to parse UTCForecastHour.");
             return false;
         }
 
         // Informational only; must not fail the whole parse if absent.
-        if (j.contains("APICreditUsedToday") && j["APICreditUsedToday"].is_number())
+        if (j.contains("APICreditsRemaining") && j["APICreditsRemaining"].is_number())
         {
-            apiCreditsUsed = j["APICreditUsedToday"].get<int>();
-            LOGF_INFO("API credits used today: %d", apiCreditsUsed);
+            apiCreditsUsed = j.value("APICreditCostOfCall", 0);
+            LOGF_INFO("API call cost %d credits; %d credits remaining this month.",
+                      apiCreditsUsed, j["APICreditsRemaining"].get<int>());
         }
 
         std::vector<double> newCloudCover, newTemperature, newWindSpeed,
                             newDewPoint, newWindDirection, newSeeing, newTransparency;
 
-        for (const auto &hour : j["RDPS_CloudCover"]) newCloudCover.push_back(hour.at("Value").at("ActualValue").get<double>());
-        for (const auto &hour : j["RDPS_Temperature"]) newTemperature.push_back(hour.at("Value").at("ActualValue").get<double>() - 273.15);
-        for (const auto &hour : j["RDPS_WindVelocity"]) newWindSpeed.push_back(hour.at("Value").at("ActualValue").get<double>() * 3.6);
-        for (const auto &hour : j["RDPS_DewPoint"]) newDewPoint.push_back(hour.at("Value").at("ActualValue").get<double>() - 273.15);
-        for (const auto &hour : j["RDPS_WindDirection"]) newWindDirection.push_back(hour.at("Value").at("ActualValue").get<double>());
-        for (const auto &hour : j["Astrospheric_Seeing"]) newSeeing.push_back(hour.at("Value").at("ActualValue").get<double>());
-        for (const auto &hour : j["Astrospheric_Transparency"]) newTransparency.push_back(hour.at("Value").at("ActualValue").get<double>());
+        // The driver indexes forecasts by whole hours from the first entry. v2 returns
+        // hourly steps first and then 3-hourly steps, so stop at the first gap.
+        auto val = [](const json &hour, const char *key)
+        {
+            return hour.at(key).at("ActualValue").get<double>();
+        };
+        for (size_t i = 0; i < hourly.size(); i++)
+        {
+            const auto &hour = hourly[i];
+            time_t t = parseUTCDateTime(hour.at("UTCForecastHour").get<std::string>());
+            if (t != newStartTime + static_cast<time_t>(i) * 3600)
+                break;
+            newCloudCover.push_back(val(hour, "Cloud"));
+            newTemperature.push_back(val(hour, "Temperature") - 273.15); // K -> C
+            newWindSpeed.push_back(val(hour, "Wind") * 3.6);             // m/s -> kph
+            newDewPoint.push_back(val(hour, "DewPoint") - 273.15);       // K -> C
+            newWindDirection.push_back(val(hour, "WindDirection"));
+            newSeeing.push_back(val(hour, "Seeing"));
+            newTransparency.push_back(val(hour, "Transparency"));
+        }
 
         // Accept the shortest vector length so all arrays index consistently.
         size_t actualHours = newCloudCover.size();
@@ -582,7 +621,7 @@ bool AstrosphericWeather::parseJSONResponse(const std::string &jsonResponse)
             return false;
         }
         if (actualHours < EXPECTED_FORECAST_HOURS)
-            LOGF_WARN("API returned only %zu of %zu expected hours; accepting shorter forecast.",
+            LOGF_DEBUG("API returned only %zu of %zu expected hours; accepting shorter forecast.",
                       actualHours, EXPECTED_FORECAST_HOURS);
 
         newCloudCover.resize(actualHours);
