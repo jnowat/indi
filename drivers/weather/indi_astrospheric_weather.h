@@ -48,15 +48,16 @@ public:
     virtual bool Connect() override;
     virtual bool Disconnect() override;
     virtual bool updateLocation(double latitude, double longitude, double elevation) override;
+    virtual bool ISSnoopDevice(XMLEle *root) override;
 
 protected:
     virtual IPState updateWeather() override;
+    virtual void simulationTriggered(bool enable) override;
 
 private:
     INDI::PropertyText   APIKeyTP{1};
     INDI::PropertyNumber LocationNP{2};
     INDI::PropertySwitch ModeSP{2};
-    INDI::PropertySwitch RefreshNowSP{1};
     INDI::PropertyText   TelescopeNameTP{1};
     INDI::PropertyText   WeatherSummaryTP{1};
     INDI::PropertyText   LastUpdateTP{1};
@@ -81,6 +82,12 @@ private:
     time_t lastFetchTime;
     int    apiCreditsUsed;
     bool   locationReceived;
+    time_t lastFetchAttempt;
+
+    bool isSimulatedMode() const;
+    void applyMode(bool simulated);
+    void clearForecast();
+    IPState reportUnavailable(const char *reason);
 
     bool fetchDataFromAPI(std::string &responseBody);
     bool parseJSONResponse(const std::string &jsonResponse);
