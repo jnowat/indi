@@ -48,6 +48,13 @@
  *                 seeing, and transparency for the next 24 h in 3-h increments.
  *   5. Refresh  — The Refresh Now button (Options tab, visible when connected)
  *                 forces an immediate fetch, bypassing the 6-hour cache TTL.
+ *   6. Safety   — SAFETY_STATUS is driven by two critical parameters:
+ *                 cloud cover (OK < 60 %, warn 60–80 %, alert > 80 %) and
+ *                 wind speed (OK < 25 kph, warn 25–40 kph, alert > 40 kph).
+ *                 Adjust either via its range property on the Parameters tab
+ *                 (MIN_OK / MAX_OK / PERC_WARN; warn band = (max-min)*perc/100
+ *                 below MAX_OK).  Ranges saved in an existing config override
+ *                 these defaults.
  *
  * Key design decisions:
  *   - Forecast data is cached for FORECAST_CACHE_TTL_SECS (6 h) to conserve
@@ -193,18 +200,23 @@ bool AstrosphericWeather::initProperties()
     defineProperty(ModeSP);
 
 
-    // Cloud cover is the critical (dome-safety) parameter.
-    // addParameter threshold model: (min, max, percWarning) ─ warning band width = max*percWarning/100.
-    // (0, 80, 25) → warning 0–20%, OK 20–60%, warning 60–80%, alert above 80%.
+    // Cloud cover and wind speed are the critical (dome-safety) parameters.
+    // addParameter threshold model: (min, max, percWarning) ─ warning band width =
+    // (max-min)*percWarning/100, applied inside each limit; a limit of 0 has no band.
+    // (0, 80, 25) → OK 0–60%, warning 60–80%, alert above 80%.
+    // (0, 40, 37.5) → wind OK below 25 kph, warning 25–40 kph, alert above 40 kph.
+    // Both are user-adjustable via the standard parameter-range properties
+    // (Parameters tab: WEATHER_CLOUD_COVER / WEATHER_WIND_SPEED MIN_OK, MAX_OK, PERC_WARN).
     addParameter("WEATHER_CLOUD_COVER",    "Cloud Cover (%)",        0,    80, 25);
     addParameter("WEATHER_TEMPERATURE",    "Temperature (C)",      -50,    50,  0);
-    addParameter("WEATHER_WIND_SPEED",     "Wind Speed (kph)",       0,   200, 50);
+    addParameter("WEATHER_WIND_SPEED",     "Wind Speed (kph)",       0,    40, 37.5);
     addParameter("WEATHER_DEW_POINT",      "Dew Point (C)",        -50,    50,  0);
     addParameter("WEATHER_WIND_DIRECTION", "Wind Direction (\xc2\xb0)", 0, 360,  0);
     addParameter("WEATHER_SEEING",         "Seeing (0-5)",           0,     5,  0);
     addParameter("WEATHER_TRANSPARENCY",   "Transparency (0-27+)",   0,    30,  0);
 
     setCriticalParameter("WEATHER_CLOUD_COVER");
+    setCriticalParameter("WEATHER_WIND_SPEED");
 
     UpdatePeriodNP[0].setValue(1800);
 
