@@ -1319,6 +1319,8 @@ void AstroTrac::simulationTriggered(bool enable)
 bool AstroTrac::handleSimulationCommand(const char *cmd, char *res, int cmd_len, int res_len)
 {
     INDI_UNUSED(cmd_len);
+    if (res_len <= 0)
+        res_len = DRIVER_LEN;
 
     // Get version
     if (strstr(cmd, "zv?"))
