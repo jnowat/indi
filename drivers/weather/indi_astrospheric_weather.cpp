@@ -30,8 +30,14 @@
  *   data.  Simulated Mode works offline and needs no API key or location.
  *
  * Usage:
- *   1. API Key  — Enter your Astrospheric key in Options > API Key before
- *                 connecting in API Mode.
+ *   1. API Key  — Set the ASTROSPHERIC_API_KEY environment variable for
+ *                 indiserver (preferred), or enter your key in Options >
+ *                 API Key.  The key is never echoed back to clients: the
+ *                 property shows a masked value ("set (from env)" or
+ *                 "****" + last 4 characters).  An env-sourced key is never
+ *                 written to the config file; a key entered by a client is
+ *                 saved to the config file so it survives restarts.  If both
+ *                 are present, the environment variable wins.
  *   2. Location — Set coordinates in Options > Location, or enter a device
  *                 name in Options > Snoop Telescope to receive GEOGRAPHIC_COORD
  *                 automatically.  EKOS also pushes location via updateLocation()
@@ -133,7 +139,7 @@ bool AstrosphericWeather::Connect()
     if (ModeSP[0].getState() == ISS_ON && !locationReceived)
         LOG_WARN("No location configured. Enter coordinates in Options > Location, or configure a Snoop Telescope.");
     if (ModeSP[0].getState() == ISS_ON &&
-        (APIKeyTP[0].getText() == nullptr || strlen(APIKeyTP[0].getText()) == 0))
+        m_APIKey.empty())
         LOG_WARN("No API key configured. Enter your Astrospheric key in Options > API Key.");
     return true;
 }
@@ -236,6 +242,16 @@ bool AstrosphericWeather::initProperties()
     addSimulationControl();
 
     loadConfig(true, "ASTROSPHERIC_API_KEY");
+    {
+        const char *envKey = getenv("ASTROSPHERIC_API_KEY");
+        if (envKey != nullptr && envKey[0] != '\0')
+        {
+            m_APIKey    = envKey;
+            m_KeyFromEnv = true;
+            LOG_INFO("Using Astrospheric API key from ASTROSPHERIC_API_KEY environment variable.");
+        }
+        updateAPIKeyDisplay();
+    }
     loadConfig(true, "LOCATION");
     if (LocationNP[LOCATION_LATITUDE].getValue() != 0.0 || LocationNP[LOCATION_LONGITUDE].getValue() != 0.0)
     {
@@ -306,12 +322,29 @@ bool AstrosphericWeather::ISNewText(const char *dev, const char *name, char *tex
     {
         if (APIKeyTP.isNameMatch(name))
         {
-            APIKeyTP.update(texts, names, n);
+            const char *newKey = nullptr;
+            for (int i = 0; i < n; i++)
+                if (names[i] && strcmp(names[i], APIKeyTP[0].getName()) == 0)
+                    newKey = texts[i];
+            if (newKey == nullptr)
+                return false;
+            // Ignore a client echoing the masked display value back to us.
+            if (newKey[0] != '\0' && maskedAPIKey() == newKey)
+            {
+                APIKeyTP.setState(IPS_OK);
+                APIKeyTP.apply();
+                return true;
+            }
+            m_APIKey     = newKey;
+            m_KeyFromEnv = false;
+            updateAPIKeyDisplay();
             APIKeyTP.setState(IPS_OK);
             APIKeyTP.apply();
-            saveConfig(true, APIKeyTP.getName());
+            // Full save: the per-property path would serialize the masked
+            // display text instead of the real key.
+            saveConfig(true);
             forecastValid = false;
-            LOG_INFO("API key updated.");
+            LOG_INFO(m_APIKey.empty() ? "API key cleared." : "API key updated (stored in config file).");
             return true;
         }
         if (TelescopeNameTP.isNameMatch(name))
@@ -466,7 +499,15 @@ bool AstrosphericWeather::ISSnoopDevice(XMLEle *root)
 bool AstrosphericWeather::saveConfigItems(FILE *fp)
 {
     INDI::Weather::saveConfigItems(fp);
-    APIKeyTP.save(fp);
+    // Persist the key only when it was entered by a client.  An env-sourced
+    // key is never written to disk.  The real key is swapped in only for the
+    // duration of the write, so clients never receive it.
+    if (!m_KeyFromEnv && !m_APIKey.empty())
+    {
+        APIKeyTP[0].setText(m_APIKey.c_str());
+        APIKeyTP.save(fp);
+        updateAPIKeyDisplay();
+    }
     LocationNP.save(fp);
     TelescopeNameTP.save(fp);
     ModeSP.save(fp);
@@ -495,7 +536,7 @@ bool AstrosphericWeather::fetchDataFromAPI(std::string &responseBody)
     json payload;
     payload["Latitude"] = lat;
     payload["Longitude"] = lon;
-    payload["APIKey"] = APIKeyTP[0].getText();
+    payload["APIKey"] = m_APIKey;
     payload["Variables"] = {"Cloud", "Transparency", "Seeing", "Temperature", "DewPoint", "WindDirection", "Wind"};
     std::string jsonDataString = payload.dump();
 
@@ -690,7 +731,7 @@ IPState AstrosphericWeather::updateWeather()
     {
         if (!locationReceived)
             return reportUnavailable("no location configured");
-        if (APIKeyTP[0].getText() == nullptr || strlen(APIKeyTP[0].getText()) == 0)
+        if (m_APIKey.empty())
             return reportUnavailable("no API key configured");
         time_t currentTime = time(nullptr);
         bool cacheExpired = !forecastValid || (currentTime - lastFetchTime) > FORECAST_CACHE_TTL_SECS;
@@ -864,4 +905,20 @@ static std::unique_ptr<AstrosphericWeather> weather(new AstrosphericWeather());
 extern "C" INDI::DefaultDevice *createDevice()
 {
     return weather.get();
+}
+
+std::string AstrosphericWeather::maskedAPIKey() const
+{
+    if (m_APIKey.empty())
+        return "";
+    if (m_KeyFromEnv)
+        return "set (from env)";
+    if (m_APIKey.size() <= 8)
+        return "****";
+    return "****" + m_APIKey.substr(m_APIKey.size() - 4);
+}
+
+void AstrosphericWeather::updateAPIKeyDisplay()
+{
+    APIKeyTP[0].setText(maskedAPIKey().c_str());
 }

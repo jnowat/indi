@@ -56,6 +56,10 @@ protected:
 
 private:
     INDI::PropertyText   APIKeyTP{1};
+    std::string          m_APIKey;          // real key, never sent to clients
+    bool                 m_KeyFromEnv {false};
+    std::string          maskedAPIKey() const;
+    void                 updateAPIKeyDisplay();
     INDI::PropertyNumber LocationNP{2};
     INDI::PropertySwitch ModeSP{2};
     INDI::PropertyText   TelescopeNameTP{1};
