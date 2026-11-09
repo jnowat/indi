@@ -84,7 +84,8 @@ install(TARGETS indi_weather_safety_alpaca RUNTIME DESTINATION bin)
 
 # ########## Astrospheric Weather Driver ###############
 SET(astrosphericweather_SRC
-    indi_astrospheric_weather.cpp)
+    indi_astrospheric_weather.cpp
+    astrospheric_forecast.cpp)
 
 add_executable(indi_astrospheric_weather ${astrosphericweather_SRC})
 target_link_libraries(indi_astrospheric_weather indidriver ${CURL})

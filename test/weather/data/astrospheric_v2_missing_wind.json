@@ -1,0 +1,64 @@
+{
+  "APICreditCostOfCall": 15,
+  "APICreditsRemaining": 99970,
+  "HourlyForecast": [
+    {
+      "UTCForecastHour": "2026-11-03T00:00:00Z",
+      "Cloud": {
+        "ActualValue": 12.0,
+        "ValueColor": "#1E90FF"
+      },
+      "Temperature": {
+        "ActualValue": 283.15,
+        "ValueColor": "#1E90FF"
+      },
+      "Wind": {
+        "ActualValue": 5.0,
+        "ValueColor": "#1E90FF"
+      },
+      "DewPoint": {
+        "ActualValue": 273.15,
+        "ValueColor": "#1E90FF"
+      },
+      "WindDirection": {
+        "ActualValue": 270.0,
+        "ValueColor": "#1E90FF"
+      },
+      "Seeing": {
+        "ActualValue": 3.5,
+        "ValueColor": "#1E90FF"
+      },
+      "Transparency": {
+        "ActualValue": 10.0,
+        "ValueColor": "#1E90FF"
+      }
+    },
+    {
+      "UTCForecastHour": "2026-11-03T01:00:00Z",
+      "Cloud": {
+        "ActualValue": 12.0,
+        "ValueColor": "#1E90FF"
+      },
+      "Temperature": {
+        "ActualValue": 283.15,
+        "ValueColor": "#1E90FF"
+      },
+      "DewPoint": {
+        "ActualValue": 273.15,
+        "ValueColor": "#1E90FF"
+      },
+      "WindDirection": {
+        "ActualValue": 270.0,
+        "ValueColor": "#1E90FF"
+      },
+      "Seeing": {
+        "ActualValue": 3.5,
+        "ValueColor": "#1E90FF"
+      },
+      "Transparency": {
+        "ActualValue": 10.0,
+        "ValueColor": "#1E90FF"
+      }
+    }
+  ]
+}

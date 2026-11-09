@@ -83,6 +83,7 @@
  */
 
 #include "indi_astrospheric_weather.h"
+#include "astrospheric_forecast.h"
 
 #include <indicom.h>
 #include <curl/curl.h>
@@ -606,135 +607,67 @@ bool AstrosphericWeather::fetchDataFromAPI(std::string &responseBody)
 bool AstrosphericWeather::parseJSONResponse(const std::string &jsonResponse)
 {
     LOG_DEBUG("Parsing JSON response...");
-    try
+
+    // Parsing lives in astrospheric_forecast.cpp so it can be unit tested offline.
+    astrospheric::Forecast fc;
+    std::string error;
+    const bool ok = astrospheric::parseForecast(jsonResponse, fc, error);
+
+    // Informational only; logged whenever the response carried it.
+    if (fc.hasCredits)
     {
-        json j = json::parse(jsonResponse);
-
-        if (j.contains("ErrorInfo") && j["ErrorInfo"].is_string())
-        {
-            LOGF_ERROR("Astrospheric API error: %s", j["ErrorInfo"].get<std::string>().c_str());
-            return false;
-        }
-        if (!j.contains("HourlyForecast") || !j["HourlyForecast"].is_array() || j["HourlyForecast"].empty())
-        {
-            LOG_ERROR("Unexpected API response: missing or empty 'HourlyForecast' array.");
-            return false;
-        }
-        const auto &hourly = j["HourlyForecast"];
-
-        std::string utcStartTimeStr = hourly[0].at("UTCForecastHour").get<std::string>();
-        const time_t newStartTime = parseUTCDateTime(utcStartTimeStr);
-        if (newStartTime == static_cast<time_t>(-1))
-        {
-            LOG_ERROR("Failed to parse UTCForecastHour.");
-            return false;
-        }
-
-        // Informational only; must not fail the whole parse if absent.
-        if (j.contains("APICreditsRemaining") && j["APICreditsRemaining"].is_number())
-        {
-            apiCreditsUsed = j.value("APICreditCostOfCall", 0);
-            LOGF_INFO("API call cost %d credits; %d credits remaining this month.",
-                      apiCreditsUsed, j["APICreditsRemaining"].get<int>());
-        }
-
-        std::vector<double> newCloudCover, newTemperature, newWindSpeed,
-                            newDewPoint, newWindDirection, newSeeing, newTransparency;
-
-        // The driver indexes forecasts by whole hours from the first entry. v2 returns
-        // hourly steps first and then 3-hourly steps, so stop at the first gap.
-        auto val = [](const json &hour, const char *key)
-        {
-            return hour.at(key).at("ActualValue").get<double>();
-        };
-        for (size_t i = 0; i < hourly.size(); i++)
-        {
-            const auto &hour = hourly[i];
-            time_t t = parseUTCDateTime(hour.at("UTCForecastHour").get<std::string>());
-            if (t != newStartTime + static_cast<time_t>(i) * 3600)
-                break;
-            newCloudCover.push_back(val(hour, "Cloud"));
-            newTemperature.push_back(val(hour, "Temperature") - 273.15); // K -> C
-            newWindSpeed.push_back(val(hour, "Wind") * 3.6);             // m/s -> kph
-            newDewPoint.push_back(val(hour, "DewPoint") - 273.15);       // K -> C
-            newWindDirection.push_back(val(hour, "WindDirection"));
-            newSeeing.push_back(val(hour, "Seeing"));
-            newTransparency.push_back(val(hour, "Transparency"));
-        }
-
-        // Accept the shortest vector length so all arrays index consistently.
-        size_t actualHours = newCloudCover.size();
-        for (size_t sz : {newTemperature.size(), newWindSpeed.size(), newDewPoint.size(),
-                          newWindDirection.size(), newSeeing.size(), newTransparency.size()})
-            actualHours = std::min(actualHours, sz);
-
-        if (actualHours == 0)
-        {
-            LOG_ERROR("API returned empty forecast vectors.");
-            return false;
-        }
-        if (actualHours < EXPECTED_FORECAST_HOURS)
-            LOGF_DEBUG("API returned only %zu of %zu expected hours; accepting shorter forecast.",
-                      actualHours, EXPECTED_FORECAST_HOURS);
-
-        newCloudCover.resize(actualHours);
-        newTemperature.resize(actualHours);
-        newWindSpeed.resize(actualHours);
-        newDewPoint.resize(actualHours);
-        newWindDirection.resize(actualHours);
-        newSeeing.resize(actualHours);
-        newTransparency.resize(actualHours);
-
-        forecastStartTime = newStartTime;
-        cloudCover    = std::move(newCloudCover);
-        temperature   = std::move(newTemperature);
-        windSpeed     = std::move(newWindSpeed);
-        dewPoint      = std::move(newDewPoint);
-        windDirection = std::move(newWindDirection);
-        seeing        = std::move(newSeeing);
-        transparency  = std::move(newTransparency);
-        forecastHours = static_cast<int>(cloudCover.size());
-        forecastValid = true;
-        lastFetchTime = time(nullptr);
-
-        char timeBuf[32];
-        struct tm tmInfo = {};
-        gmtime_r(&lastFetchTime, &tmInfo);
-        strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M UTC", &tmInfo);
-        LastUpdateTP[0].setText(timeBuf);
-        LastUpdateTP.setState(IPS_OK);
-        LastUpdateTP.apply();
-
-        time_t expiryTime = forecastStartTime + static_cast<time_t>(forecastHours) * 3600;
-        char expiryBuf[32];
-        struct tm expiryTm = {};
-        gmtime_r(&expiryTime, &expiryTm);
-        strftime(expiryBuf, sizeof(expiryBuf), "%Y-%m-%d %H:%M UTC", &expiryTm);
-        ForecastValidUntilTP[0].setText(expiryBuf);
-        ForecastValidUntilTP.setState(IPS_OK);
-        ForecastValidUntilTP.apply();
-
-        LOGF_INFO("Parsed forecast for %d hours starting at %s.", forecastHours, utcStartTimeStr.c_str());
-        return true;
+        apiCreditsUsed = fc.creditCost;
+        LOGF_INFO("API call cost %d credits; %d credits remaining this month.",
+                  apiCreditsUsed, fc.creditsRemaining);
     }
-    catch (const json::exception &e)
+
+    if (!ok)
     {
-        LOGF_ERROR("JSON parsing error: %s", e.what());
+        LOGF_ERROR("%s", error.c_str());
         return false;
     }
+
+    if (fc.hours() < EXPECTED_FORECAST_HOURS)
+        LOGF_DEBUG("API returned only %zu of %zu expected hours; accepting shorter forecast.",
+                   fc.hours(), EXPECTED_FORECAST_HOURS);
+
+    // Only replace the cached forecast once the whole response parsed cleanly.
+    forecastStartTime = fc.startTime;
+    cloudCover    = std::move(fc.cloudCover);
+    temperature   = std::move(fc.temperature);
+    windSpeed     = std::move(fc.windSpeed);
+    dewPoint      = std::move(fc.dewPoint);
+    windDirection = std::move(fc.windDirection);
+    seeing        = std::move(fc.seeing);
+    transparency  = std::move(fc.transparency);
+    forecastHours = static_cast<int>(cloudCover.size());
+    forecastValid = true;
+    lastFetchTime = time(nullptr);
+
+    char timeBuf[32];
+    struct tm tmInfo = {};
+    gmtime_r(&lastFetchTime, &tmInfo);
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M UTC", &tmInfo);
+    LastUpdateTP[0].setText(timeBuf);
+    LastUpdateTP.setState(IPS_OK);
+    LastUpdateTP.apply();
+
+    time_t expiryTime = forecastStartTime + static_cast<time_t>(forecastHours) * 3600;
+    char expiryBuf[32];
+    struct tm expiryTm = {};
+    gmtime_r(&expiryTime, &expiryTm);
+    strftime(expiryBuf, sizeof(expiryBuf), "%Y-%m-%d %H:%M UTC", &expiryTm);
+    ForecastValidUntilTP[0].setText(expiryBuf);
+    ForecastValidUntilTP.setState(IPS_OK);
+    ForecastValidUntilTP.apply();
+
+    LOGF_INFO("Parsed forecast for %d hours starting at %s.", forecastHours, fc.startTimeStr.c_str());
+    return true;
 }
 
 time_t AstrosphericWeather::parseUTCDateTime(const std::string &dateTimeStr)
 {
-    std::tm tm = {};
-    std::istringstream ss(dateTimeStr);
-    ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    if (ss.fail()) return static_cast<time_t>(-1);
-#if defined(_WIN32)
-    return _mkgmtime(&tm);
-#else
-    return timegm(&tm);
-#endif
+    return astrospheric::parseUTCDateTime(dateTimeStr);
 }
 
 IPState AstrosphericWeather::updateWeather()
